@@ -37,7 +37,7 @@ def have_cuda():
 
 
 def default_device_type():
-    return "cuda" if have_cuda() else "cpu"
+    return "cpu"
 
 
 no_grad = contextmanager_to_decorator(th.no_grad)
