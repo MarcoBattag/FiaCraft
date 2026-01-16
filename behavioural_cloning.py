@@ -44,7 +44,7 @@ KL_LOSS_WEIGHT = 1.0
 MAX_GRAD_NORM = 5.0
 
 MAX_BATCHES = 2000 if USING_FULL_DATASET else int(1e9)
-
+#non va cambiato
 def load_model_parameters(path_to_model_file):
     agent_parameters = pickle.load(open(path_to_model_file, "rb"))
     policy_kwargs = agent_parameters["model"]["args"]["net"]["args"]
