@@ -2,63 +2,58 @@ import os
 import json
 import cv2
 
-def is_inventory_useful(inventory):
+def has_wooden_pickaxe(inventory):
     """
-    Verifica se l'inventario contiene solo oggetti utili o è vuoto.
+    Verifica se l'inventario contiene un piccone di legno.
     """
-    useful_items = {
-        "crafting_table","oak_planks", "birch_planks", "spruce_planks", 
-        "jungle_planks", "acacia_planks", "dark_oak_planks",
-        "oak_log", "birch_log", "spruce_log", "jungle_log", 
-        "acacia_log", "dark_oak_log"
-    }
-    # L'inventario è utile se è vuoto o contiene solo oggetti della lista
-    return all(item["type"] in useful_items for item in inventory)
+    target_item = "wooden_pickaxe"
+    # Cerca l'oggetto nell'inventario
+    return any(item.get("type") == target_item for item in inventory)
 
 def get_cut_timestamp(jsonl_path):
     """
-    Legge un file JSONL e restituisce il tick e il tempo relativo in cui tagliare il video.
+    Legge un file JSONL e restituisce il tick e il tempo in cui il piccone viene creato.
+    Restituisce is_valid=False se il piccone non viene mai creato o se è già presente all'inizio.
     """
     try:
         with open(jsonl_path, "r", encoding="utf-8", errors="ignore") as f:
             lines = f.readlines()
     except UnicodeDecodeError as e:
-        print(f"Errore di decodifica UTF-8 alla posizione {e.start}. Prova a verificare l'encoding del file.")
+        print(f"Errore di decodifica UTF-8 alla posizione {e.start}.")
         return None, None, False
 
     first_milli = None
-    average_server_tick_duration = 0
     first_inventory_check = True
-    is_useful = True
 
     for line in lines:
-        data = json.loads(line)
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
 
         if first_milli is None:
             first_milli = data["milli"]
 
-        server_tick_duration = data.get("serverTickDurationMs", 50.0)
-        average_server_tick_duration = (average_server_tick_duration + server_tick_duration) / 2
-
         inventory = data.get("inventory", [])
 
-        # Se il primo inventario è già inutile, scartiamo il video
+        # Controllo iniziale: se abbiamo già il piccone al primo frame, il video è inutile
+        # (vogliamo imparare a costruirlo, non averlo già)
         if first_inventory_check:
-            is_useful = is_inventory_useful(inventory)
-            first_inventory_check = False
-            if not is_useful:
-                print(f"Video inizia con un inventario non utile: {inventory}")
+            if has_wooden_pickaxe(inventory):
+                print(f"Video inizia già con un piccone di legno. Scartato.")
                 return None, None, False
+            first_inventory_check = False
 
-        if not is_inventory_useful(inventory):
+        # Verifica se il piccone è apparso
+        if has_wooden_pickaxe(inventory):
             cut_tick = data["tick"]
             cut_time = (data["milli"] - first_milli) / 1000.0
-            print(f"Inventario non utile trovato a tick {cut_tick}: {inventory}")
-            print(f"Tempo relativo: {cut_time} secondi")
+            print(f"Piccone di legno costruito al tick {cut_tick}!")
+            print(f"Tempo relativo: {cut_time:.2f} secondi")
             return cut_tick, cut_time, True
 
-    print("Tutti i tick contengono inventari utili.")
-    return None, None, True
+    print("Il piccone di legno non è mai stato costruito in questo video.")
+    return None, None, False
 
 def trim_video(video_path, output_path, cut_time):
     """
@@ -73,10 +68,15 @@ def trim_video(video_path, output_path, cut_time):
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
+    
+    # Calcolo frame di taglio
     cut_frame = int(cut_time * fps)
-    print(f"FPS: {fps}, Frame totali: {total_frames}, Frame di taglio: {cut_frame}")
+    
+    # Aggiungiamo un piccolo buffer (es. 1 secondo o 20 frame) per vedere l'oggetto nell'inventario
+    # Rimuovi la riga sotto se vuoi tagliare all'istante esatto
+    cut_frame += int(fps * 1.0) 
+
+    print(f"Taglio al frame: {cut_frame}")
 
     codec = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, codec, fps, (width, height))
@@ -84,7 +84,7 @@ def trim_video(video_path, output_path, cut_time):
     current_frame = 0
     while True:
         ret, frame = cap.read()
-        if not ret or current_frame >= cut_frame:
+        if not ret or current_frame > cut_frame: # Modificato in > per includere il frame finale
             break
 
         out.write(frame)
@@ -92,7 +92,7 @@ def trim_video(video_path, output_path, cut_time):
 
     cap.release()
     out.release()
-    print(f"Video tagliato salvato in: {output_path}")
+    print(f"Video salvato in: {output_path}")
     return cut_frame
 
 def trim_jsonl(jsonl_path, output_jsonl_path, max_tick):
@@ -103,20 +103,26 @@ def trim_jsonl(jsonl_path, output_jsonl_path, max_tick):
         with open(jsonl_path, "r", encoding="utf-8", errors="ignore") as infile:
             lines = infile.readlines()
     except UnicodeDecodeError as e:
-        print(f"Errore di decodifica UTF-8 alla posizione {e.start}.")
+        print(f"Errore: {e}")
         return
 
     trimmed_lines = []
+    # Buffer di tick extra per corrispondere al buffer video (opzionale, qui taglio esatto al tick rilevato)
+    # Se vuoi includere qualche tick dopo, aumenta max_tick
+    
     for line in lines:
-        data = json.loads(line)
-        if data["tick"] > max_tick:
-            break
-        trimmed_lines.append(line)
+        try:
+            data = json.loads(line)
+            if data["tick"] > max_tick + 20: # +20 tick di margine (circa 1 sec)
+                break
+            trimmed_lines.append(line)
+        except json.JSONDecodeError:
+            continue
 
     with open(output_jsonl_path, "w", encoding="utf-8") as outfile:
         outfile.writelines(trimmed_lines)
 
-    print(f"JSONL tagliato salvato in: {output_jsonl_path}")
+    print(f"JSONL salvato in: {output_jsonl_path}")
 
 def process_videos(input_folder, output_folder):
     """
@@ -125,6 +131,9 @@ def process_videos(input_folder, output_folder):
     os.makedirs(output_folder, exist_ok=True)
 
     video_paths = [f for f in os.listdir(input_folder) if f.endswith(".mp4")]
+    
+    count_processed = 0
+    
     for video_name in video_paths:
         jsonl_name = video_name.replace(".mp4", ".jsonl")
         video_path = os.path.join(input_folder, video_name)
@@ -134,23 +143,28 @@ def process_videos(input_folder, output_folder):
             print(f"JSONL non trovato per {video_name}, salto...")
             continue
 
-        last_tick, cut_time, is_useful = get_cut_timestamp(jsonl_path)
+        print(f"\nProcessing: {video_name}...")
+        
+        # Ottieni punto di taglio (o False se il video non è valido)
+        last_tick, cut_time, is_valid = get_cut_timestamp(jsonl_path)
 
-        if not is_useful:
-            print(f"Scartato video {video_name} per contenere oggetti non utili sin dall'inizio.")
-            continue
-
-        if cut_time is None or last_tick is None:
-            print(f"Nessun taglio necessario per {video_name}, salto...")
+        if not is_valid:
+            print(f"Video {video_name} SCARTATO (Obiettivo non raggiunto o già presente).")
             continue
 
         output_video_path = os.path.join(output_folder, f"trimmed_{video_name}")
-        cut_frame = trim_video(video_path, output_video_path, cut_time)
+        trim_video(video_path, output_video_path, cut_time)
 
         output_jsonl_path = os.path.join(output_folder, f"trimmed_{jsonl_name}")
         trim_jsonl(jsonl_path, output_jsonl_path, last_tick)
+        
+        count_processed += 1
+
+    print(f"\n--- Finito ---")
+    print(f"Video processati e salvati correttamente: {count_processed}/{len(video_paths)}")
 
 if __name__ == "__main__":
-    input_folder = "/home/dodod/FiaCraft/data/data-video/iron"       
-    output_folder = "/home/dodod/FiaCraft/data/data-video/video_tagliati"
+    # Assicurati di aggiornare i percorsi se necessario
+    input_folder = "*/FiaCraft/data/data-video/iron"       
+    output_folder = "*/FiaCraft/data/data-video/video_tagliati_pickaxe"
     process_videos(input_folder, output_folder)
