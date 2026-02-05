@@ -3,328 +3,322 @@ import pickle
 import os
 import matplotlib.pyplot as plt
 import pandas as pd
-
 import aicrowd_gym
 import minerl
 import torch as th
 import numpy as np
 from collections import deque
-
-
 import sys
-import os
 
-# Aggiungi la cartella superiore al percorso dei moduli Python
+# Setup percorsi (mantenuto dal tuo script originale)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-import os
-#sys.path.append(os.path.abspath('../'))  # Aggiunge la cartella superiore al PYTHONPATH
-from openai_vpt.agent import MineRLAgent
-import register_envs  # Importa il file di registrazione degli ambienti
+# from openai_vpt.agent import MineRLAgent # Decommenta se necessario in base alla tua struttura
+# Assumo che MineRLAgent sia importabile dato il tuo script precedente
+try:
+    from openai_vpt.agent import MineRLAgent
+except ImportError:
+    # Fallback se la struttura delle cartelle è diversa
+    sys.path.append(os.path.abspath('../'))
+    from openai_vpt.agent import MineRLAgent
 
-
-# Funzione per calcolare la reward in base ai materiali
+# --- CONFIGURAZIONE REWARDS ---
+# La logica è: Materiali Grezzi < Materiali Lavorati < Utensili < OBIETTIVO
 MATERIAL_REWARDS = {
-    "birch_log": 0.2,
-    "dark_oak_log": 0.2,
-    "jungle_log": 0.2,
-    "oak_log": 0.2,
-    "spruce_log": 0.2,
-    "dark_oak_planks": 0.2,
-    "jungle_planks": 0.4,
-    "oak_planks": 0.4,
-    "spruce_planks": 0.4,
-    "crafting_table": 0.6, 
-    "dirt": -0.01,
-    "gravel": -0.01,
-    "sand": -0.01
+    # Materiali Grezzi (Reward bassa per incentivare la raccolta, ma non il farming inutile)
+    "log": 1.0, 
+    "birch_log": 1.0,
+    "dark_oak_log": 1.0,
+    "jungle_log": 1.0,
+    "oak_log": 1.0,
+    "spruce_log": 1.0,
+    "acacia_log": 1.0,
+    
+    # Materiali Intermedi (Necessari per il crafting)
+    "planks": 2.0,
+    "birch_planks": 2.0,
+    "dark_oak_planks": 2.0,
+    "jungle_planks": 2.0,
+    "oak_planks": 2.0,
+    "spruce_planks": 2.0,
+    "acacia_planks": 2.0,
+    
+    # STEP FONDAMENTALE MANCANTE PRIMA: Bastoncini
+    "stick": 5.0,
+    
+    # Crafting Station
+    "crafting_table": 15.0, 
+    
+    # OBIETTIVO FINALE (Reward molto alta)
+    "wooden_pickaxe": 100.0,
+
+    # Penalità lievi per spazzatura (opzionale)
+    "dirt": -0.05,
+    "gravel": -0.05,
+    "sand": -0.05
 }
 
 # Configurazione per monitorare i salti
 JUMP_THRESHOLD = 10
-# Numero massimo di passi da considerare
 JUMP_WINDOW = 40 
 
-# Normalizzazione della reward
-def compute_reward(inventory, best_inventory):
+# --- FUNZIONI DI SUPPORTO ---
+
+def compute_reward_and_update_best(inventory, best_inventory):
+    """
+    Calcola la reward basata sull'acquisizione di NUOVI oggetti rispetto
+    al massimo storico posseduto (High Water Mark).
+    """
     reward = 0
+    # Controlliamo solo gli oggetti che ci interessano nel dizionario REWARDS
     for material, value in MATERIAL_REWARDS.items():
-        current_quantity = int(inventory.get(material, 0))  # Converte in intero
-        previous_quantity = int(best_inventory.get(material, 0))  # Converte in intero
+        current_quantity = int(inventory.get(material, 0))
+        max_ever_quantity = int(best_inventory.get(material, 0))
 
-        if current_quantity > previous_quantity:
-            print(f"Reward assegnata: {material}, Incremento: {current_quantity - previous_quantity}")
-            reward += (current_quantity - previous_quantity) * value
+        # Diamo reward SOLO se l'inventario corrente supera il record precedente.
+        # Questo premia l'ottenimento, ma non penalizza il consumo (crafting).
+        if current_quantity > max_ever_quantity:
+            diff = current_quantity - max_ever_quantity
+            print(f">>> PROGRESSO: {material} aumentato a {current_quantity} (Nuovo Record). Reward: +{diff * value}")
+            reward += diff * value
+            
+            # Aggiorniamo il record storico per questo materiale
+            best_inventory[material] = current_quantity
 
-    return reward / (abs(reward) + 1e-6) if abs(reward) > 1 else reward
+    return reward
 
-
-# Funzione per assegnare reward basate su azioni
-def action_based_reward(action, inventory, jump_window, inventory_reward_given):
+def action_based_reward(action, jump_window):
     """
-    Calcola la reward basata sulle azioni dell'agente.
-    
-    Args:
-        action: L'azione eseguita dall'agente.
-        inventory: Lo stato corrente dell'inventario dell'agente.
-        jump_window: Una deque che traccia i salti negli ultimi N passi.
-        isInventoryOpen: Booleano che indica se l'inventario è aperto.
-        
-    Returns:
-        La reward associata all'azione.
+    Penalità per comportamenti indesiderati (troppi salti, nessuna azione).
     """
     reward = 0
 
-    # Reward negativa se in una finestra di 20 passi ci sono più di 10 salti
-    if sum(jump_window) > 40:  # Usa la finestra mobile per monitorare i salti
-        reward -= 0.01
+    # Penalità se troppi salti in breve tempo (consumo fame inutile)
+    if sum(jump_window) > 20: 
+        reward -= 0.02
        
-    # Penalità per inattività: nessuna azione con valore 1
-    if not any(np.any(value == 1) if isinstance(value, np.ndarray) else value == 1 for value in action.values()):
-        reward -= 0
+    # Penalità per inattività totale
+    is_active = any(np.any(v == 1) if isinstance(v, np.ndarray) else v == 1 for v in action.values())
+    if not is_active:
+        reward -= 0.01
 
-    return reward / (abs(reward) + 1e-6) if abs(reward) > 1 else reward, inventory_reward_given
+    return reward
 
-    
-# Funzione per normalizzare la perdita
 def normalize(tensor):
-    if tensor.numel() <= 1:  # Se il tensore ha un solo elemento o è vuoto
-        return tensor  # Restituisci il tensore originale senza normalizzare
+    if tensor.numel() <= 1:
+        return tensor
     return (tensor - tensor.mean()) / (tensor.std() + 1e-8)
 
-def get_useful_items(material_rewards):
-    """
-    Filtra i materiali utili basandosi sui valori positivi in MATERIAL_REWARDS.
-    """
-    return [material for material, value in material_rewards.items() if value > 0]
+# --- MAIN LOOP ---
 
-
-def is_better_inventory(current_inventory, best_inventory):
-    """
-    Determina se l'inventario corrente è migliore di quello migliore precedente.
-    """
-    useful_items = get_useful_items(MATERIAL_REWARDS)
-
-    current_score = sum(current_inventory.get(item, 0) for item in useful_items)
-    best_score = sum(best_inventory.get(item, 0) for item in useful_items)
-    return current_score > best_score
-
-def main(model, weights, env, n_episodes=3, max_steps=int(1e9), show=True):
-    env = aicrowd_gym.make(env)
-    #env.seed(7011)
+def main(model, weights, env_name, n_episodes=3, max_steps=2000, show=True):
+    env = aicrowd_gym.make(env_name)
+    
+    # Caricamento modello e pesi
     agent_parameters = pickle.load(open(model, "rb"))
     policy_kwargs = agent_parameters["model"]["args"]["net"]["args"]
     pi_head_kwargs = agent_parameters["model"]["args"]["pi_head_opts"]
     pi_head_kwargs["temperature"] = float(pi_head_kwargs["temperature"])
+    
     agent = MineRLAgent(env, policy_kwargs=policy_kwargs, pi_head_kwargs=pi_head_kwargs)
     agent.load_weights(weights)
+    print("Modello caricato con successo.")
 
-    # Configura il grafico interattivo
+    # Setup Grafico
     plt.ion()
     fig, ax = plt.subplots()
     ax.set_title("Reward Cumulativa in Tempo Reale")
     ax.set_xlabel("Passi")
-    ax.set_ylabel("Reward Cumulativa")
-    line, = ax.plot([], [], label="Reward Cumulativa")
+    ax.set_ylabel("Reward")
+    line, = ax.plot([], [], label="Reward Episodio")
     plt.legend()
     plt.grid(True)
 
-    # Congela tutti i parametri del modello
+    # Congelamento parametri tranne pi_head
     for param in agent.policy.parameters():
         param.requires_grad = False
-        
-    # Sblocca i parametri del `pi_head` (responsabili della distribuzione delle azioni)
     for param in agent.policy.pi_head.parameters():
         param.requires_grad = True
 
+    # Setup Ottimizzatore
     optimizer = th.optim.RMSprop(
         filter(lambda p: p.requires_grad, agent.policy.parameters()), 
-        lr=0.00001, 
-        alpha=0.99, 
-        eps=1e-8
+        lr=0.00001, alpha=0.99, eps=1e-8
     )
     scheduler = th.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.9)
-    gamma = 0.99  # Sconto per reward futura
+    gamma = 0.99 
 
-    cumulative_rewards = []  # Reward cumulativa per ogni episodio
+    cumulative_rewards = [] 
+    
+    # Creazione cartelle output
+    base_dir = "./data/Stats/RLTranding_reward"
+    os.makedirs(base_dir, exist_ok=True)
+
+    # --- INIZIO EPISODI ---
     for episode in range(n_episodes):
+        print(f"\n=== AVVIO EPISODIO {episode + 1}/{n_episodes} ===")
         obs = env.reset()
-        best_inventory = {key: 0 for key in MATERIAL_REWARDS.keys()}  # Inizializza il miglior inventario
         
-        jump_window = deque(maxlen=20)  # Finestra mobile per i salti
-        inventory_reward_given = False  # Flag per la reward di inventario
-        isInventoryOpen = False
+        # Inizializza il registro del "massimo posseduto"
+        best_inventory = {key: 0 for key in MATERIAL_REWARDS.keys()}
         
+        jump_window = deque(maxlen=20)
         cumulative_episode_reward = 0
-        cumulative_reward = 0
-        episode_rewards = []  # Salva le reward per ogni passo
-        steps = []  # Salva i passi per il grafico
-
-        episode_dir = f"./data/Stats/RLTranding_reward/episode{episode + 1}"
-        os.makedirs(episode_dir, exist_ok=True)
-
+        
+        # Liste per grafici e statistiche
+        episode_rewards = []
+        steps_plot = []
+        
+        # Buffer per PPO
         batch_rewards = []
         batch_log_probs = []
         batch_advantages = []
 
+        episode_dir = f"{base_dir}/episode{episode + 1}"
+        os.makedirs(episode_dir, exist_ok=True)
+
         for step in range(max_steps):
+            # 1. Scelta Azione
             action = agent.get_action(obs)
-            action["ESC"] = 0
-            obs, _, done, _ = env.step(action)
-
-            # Aggiungi un'esplorazione casuale
-            if np.random.rand() < 0.05: # 10% di probabilità di azione casuale
+            action["ESC"] = 0 # Evita di aprire il menu di pausa
+            
+            # Esplorazione casuale ridotta
+            if np.random.rand() < 0.05:
                 action = env.action_space.sample()
+                action["ESC"] = 0
 
-            # Aggiorna la finestra dei salti
+            # 2. Esecuzione Step
+            obs, _, done, _ = env.step(action)
+            
+            # 3. Aggiornamenti Variabili Stato
             jump_window.append(action.get("jump", 0))
-    
-            # Calcola la reward basata sull'inventario
             inventory = obs["inventory"]
 
-            material_reward = compute_reward(inventory, best_inventory)
-
-            # Aggiorna il miglior inventario
-            if is_better_inventory(inventory, best_inventory):
-                best_inventory = {key: inventory.get(key, 0) for key in MATERIAL_REWARDS.keys()}
-                print(f"Aggiornamento di best_inventory: {best_inventory}")
-
-
-            action_reward, inventory_reward_given = action_based_reward(action, inventory, jump_window, inventory_reward_given)
-            reward = material_reward + action_reward
-            # Accumula la reward per valutare l'episodio
+            # 4. Calcolo Reward (Logica corretta)
+            # Calcola reward materiali e aggiorna best_inventory se necessario
+            material_reward = compute_reward_and_update_best(inventory, best_inventory)
+            
+            # Calcola reward azioni (movimento, salti)
+            act_reward = action_based_reward(action, jump_window)
+            
+            reward = material_reward + act_reward
             cumulative_episode_reward += reward
 
-             # Aggiorna lo stato dell'inventario
-            if action.get("inventory", 0) == 1:
-                isInventoryOpen = not isInventoryOpen
-                if not isInventoryOpen:
-                    inventory_reward_given = False  # Reset quando l'inventario si chiude
-
-            # Aggiorna i dati per il grafico
-            steps.append(step + 1)
+            # 5. Controllo Obiettivo Raggiunto (Win Condition)
+            if inventory.get("wooden_pickaxe", 0) > 0:
+                print("\n\n!!! OBIETTIVO RAGGIUNTO: PICCONE DI LEGNO COSTRUITO !!!\n")
+                reward += 500 # Bonus massiccio
+                cumulative_episode_reward += 500
+                done = True # Termina episodio
+                
+            # 6. Aggiornamento Grafico e Log
+            steps_plot.append(step + 1)
             episode_rewards.append(cumulative_episode_reward)
+            
+            if step % 10 == 0: # Aggiorna grafico meno frequentemente per velocità
+                line.set_xdata(steps_plot)
+                line.set_ydata(episode_rewards)
+                ax.relim()
+                ax.autoscale_view()
+                fig.canvas.draw_idle()
+                plt.pause(0.001)
+                print(f"\rStep: {step} | Reward Step: {reward:.4f} | Totale: {cumulative_episode_reward:.2f}", end="")
 
-            # Aggiorna il grafico interattivo
-            print(f"step: {step} reward: {reward}")
-            line.set_xdata(steps)
-            line.set_ydata(episode_rewards)
-            ax.relim()
-            ax.autoscale_view()
-            fig.canvas.draw_idle()
-            plt.pause(0.01)
-
-            best_inventory = {key: inventory.get(key, 0) for key in MATERIAL_REWARDS.keys()}
-
-            # Ottieni la distribuzione e l'azione trasformata
+            # 7. Preparazione PPO
+            # Recupera tensori necessari per il calcolo della loss
+            agent_obs = agent._env_obs_to_agent(obs)
             da = agent.policy.get_output_for_observation(
-                agent._env_obs_to_agent(obs),
+                agent_obs,
                 agent.policy.initial_state(1),
                 th.tensor([False])
             )[0]
             ac = agent._env_action_to_agent(action, to_torch=True, check_if_null=False)
-
-            # Calcola il log_prob e la perdita
             log_prob = agent.policy.get_logprob_of_action(da, ac)
+            
+            # Calcolo Advantage
             advantage = reward + gamma * log_prob.detach().mean() - log_prob.mean()
             advantage = normalize(advantage)
 
-            # Accumula i valori batch-wise
             batch_rewards.append(reward)
             batch_log_probs.append(log_prob)
             batch_advantages.append(advantage)
 
-            epsilon = 0.2  # Parametro di clipping (valore tipico: 0.1-0.3)
+            # 8. Aggiornamento PPO (Ogni 64 step o se done)
+            if (step + 1) % 64 == 0 or done:
+                batch_log_probs_t = th.stack(batch_log_probs)
+                batch_advantages_t = th.stack(batch_advantages)
 
-            if (step + 1) % 64 == 0:
-                cumulative_reward = sum(batch_rewards)
-                # Converte in tensori
-                batch_log_probs = th.stack(batch_log_probs)
-                batch_advantages = th.stack(batch_advantages)
-
-                print("\n----------------------------------------------------------------\n")
-                print(f"Reward cumulativa ultimi 64 passi: {cumulative_reward} \n")
-                print("\n----------------------------------------------------------------\n")
-
-                # Calcolo del rapporto r_t e applicazione del clipping
-                r_t = th.exp(batch_log_probs - batch_log_probs.detach())
+                # Calcolo Loss con Clipping
+                r_t = th.exp(batch_log_probs_t - batch_log_probs_t.detach())
+                epsilon = 0.2
                 clipped_ratio = th.clamp(r_t, 1 - epsilon, 1 + epsilon)
-                loss = -th.min(r_t * batch_advantages, clipped_ratio * batch_advantages).mean()
+                loss = -th.min(r_t * batch_advantages_t, clipped_ratio * batch_advantages_t).mean()
 
-                # Backpropagation e aggiornamento
                 optimizer.zero_grad()
                 loss.backward()
                 th.nn.utils.clip_grad_norm_(agent.policy.parameters(), max_norm=1.0)
                 optimizer.step()
-                scheduler.step() # Aggiorna il learning rate dopo ogni batch
+                scheduler.step()
 
-                # Reset dei batch
+                # Reset batch
                 batch_rewards = []
                 batch_log_probs = []
                 batch_advantages = []
                 
-            elif (step + 1) % 64 == 0:
-                # Reset dei batch
-                batch_rewards = []
-                batch_log_probs = []
-                batch_advantages = []
+                if step % 64 == 0:
+                    print(f"\n[PPO UPDATE] Loss: {loss.item():.4f}")
 
             if show:
                 env.render()
+            
             if done:
                 break
 
-        # Salva dati e grafico per l'episodio
-        df = pd.DataFrame({"Passo": steps, "Reward Cumulativa": episode_rewards})
-        episode_excel_file = os.path.join(episode_dir, f"episode_{episode + 1}_rewards.xlsx")
-        df.to_excel(episode_excel_file, index=False)
+        # --- FINE EPISODIO ---
+        print(f"\nEpisodio {episode + 1} terminato. Reward Totale: {cumulative_episode_reward}")
+        cumulative_rewards.append(cumulative_episode_reward)
 
-        episode_graph_file = os.path.join(episode_dir, f"episode_{episode + 1}_reward_graph.png")
+        # Salvataggio dati episodio
+        df = pd.DataFrame({"Passo": steps_plot, "Reward Cumulativa": episode_rewards})
+        df.to_excel(os.path.join(episode_dir, f"episode_{episode + 1}_rewards.xlsx"), index=False)
+
         plt.figure()
-        plt.plot(steps, episode_rewards, marker='o', label=f"Episode {episode + 1}")
-        plt.title(f"Andamento Reward Cumulativa - Episodio {episode + 1}")
-        plt.xlabel("Passo")
-        plt.ylabel("Reward Cumulativa")
-        plt.grid(True)
-        plt.legend()
-        plt.savefig(episode_graph_file)
+        plt.plot(steps_plot, episode_rewards, marker='o', label=f"Episode {episode + 1}")
+        plt.title(f"Reward Ep {episode + 1}")
+        plt.savefig(os.path.join(episode_dir, f"episode_{episode + 1}_graph.png"))
         plt.close()
 
-        print(f"Episodio {episode + 1}/{n_episodes} - Reward cumulativa: {cumulative_episode_reward}")
-        cumulative_rewards.append(cumulative_episode_reward)
-        
     env.close()
 
+    # --- SALVATAGGIO FINALE ---
     # Grafico complessivo
     plt.figure(figsize=(10, 6))
-    plt.plot(range(1, n_episodes + 1), cumulative_rewards, marker='o', label="Reward Cumulativa Totale")
-    plt.title("Andamento della Reward Cumulativa per Tutti gli Episodi", fontsize=14)
-    plt.xlabel("Episodio", fontsize=12)
-    plt.ylabel("Reward Cumulativa", fontsize=12)
-    plt.grid(True)
-    plt.legend()
-    plt.savefig("./data/Stats/RLTranding_reward/cumulative_reward_trend_all_episodes.png")
-    plt.show()
-
-    # Salva i pesi aggiornati
+    plt.plot(range(1, n_episodes + 1), cumulative_rewards, marker='o')
+    plt.title("Reward Totale per Episodio")
+    plt.xlabel("Episodio")
+    plt.ylabel("Reward Totale")
+    plt.savefig(f"{base_dir}/cumulative_reward_trend_all.png")
+    
+    # Salvataggio pesi
     state_dict = agent.policy.state_dict()
-    th.save(state_dict, "ppo_updated_weights_rmsprop.weights")
+    th.save(state_dict, "ppo_wooden_pickaxe.weights")
+    print("Addestramento completato e pesi salvati.")
 
 if __name__ == "__main__":
-    parser = ArgumentParser("PPO Reinforcement Learning Execution with RMSProp")
+    parser = ArgumentParser("PPO MineRL - Wooden Pickaxe Training")
 
-    parser.add_argument("--env", type=str, required=True, help="Nome dell'ambiente MineRL (es. MineRLObtainDiamondShovel-v0)")
-    parser.add_argument("--model", type=str, required=True, help="Percorso al file '.model' pre-addestrato.")
-    parser.add_argument("--weights", type=str, required=True, help="Percorso al file '.weights' pre-addestrato.")
-    parser.add_argument("--episodes", type=int, default=10, help="Numero di episodi da eseguire.")
-    parser.add_argument("--max-steps", type=int, default=2000, help="Numero massimo di passi per episodio.")
-    parser.add_argument("--show", action="store_true", help="Visualizza il rendering dell'ambiente.")
+    parser.add_argument("--env", type=str, required=True, help="Nome dell'ambiente MineRL")
+    parser.add_argument("--model", type=str, required=True, help="Percorso file .model")
+    parser.add_argument("--weights", type=str, required=True, help="Percorso file .weights")
+    parser.add_argument("--episodes", type=int, default=10, help="N. episodi")
+    parser.add_argument("--max-steps", type=int, default=2000, help="Max passi per episodio")
+    parser.add_argument("--show", action="store_true", help="Render video")
 
     args = parser.parse_args()
 
     main(
         model=args.model,
         weights=args.weights,
-        env=args.env,
+        env_name=args.env, # Nota: ho rinominato l'argomento in main per chiarezza
         n_episodes=args.episodes,
         max_steps=args.max_steps,
         show=args.show
