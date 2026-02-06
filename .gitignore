@@ -132,4 +132,4 @@ venv/
 *.mp4
 *:Zone.Identifier
 
-.jsonl
+*.jsonl
