@@ -9,6 +9,7 @@ import torch as th
 import numpy as np
 from collections import deque
 import sys
+import envs
 
 # Setup percorsi (mantenuto dal tuo script originale)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
