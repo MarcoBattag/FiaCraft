@@ -10,6 +10,7 @@
 #
 
 import argparse
+import random
 import urllib.request
 import os
 import glob, os, cv2, json
@@ -47,6 +48,9 @@ def main(args):
     data = eval(data)
     basedir = data["basedir"]
     relpaths = data["relpaths"]
+
+    random.shuffle(relpaths)
+
     if args.num_demos is not None:
         relpaths = relpaths[:args.num_demos]
 
