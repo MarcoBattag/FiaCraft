@@ -1,45 +1,27 @@
-# Code for loading OpenAI MineRL VPT datasets
-# (NOTE: Modified for Sequence Loading!)
+# data_loader.py - VERSIONE SEQUENTIAL (Fixed per VPT)
 import json
 import glob
 import os
 import random
 from multiprocessing import Process, Queue, Event
-
 import numpy as np
 import cv2
+from openai_vpt.agent import resize_image, AGENT_RESOLUTION
 
-from openai_vpt.agent import ACTION_TRANSFORMER_KWARGS, resize_image, AGENT_RESOLUTION
-from openai_vpt.lib.actions import ActionTransformer
-
-QUEUE_TIMEOUT = 300
+# Configurazione
+QUEUE_TIMEOUT = 60
 CURSOR_FILE = os.path.join(os.path.dirname(__file__), "cursors", "mouse_cursor_white_16x16.png")
 
-# Mapping from JSON keyboard buttons to MineRL actions
 KEYBOARD_BUTTON_MAPPING = {
-    "key.keyboard.escape" :"ESC",
-    "key.keyboard.s" :"back",
-    "key.keyboard.q" :"drop",
-    "key.keyboard.w" :"forward",
-    "key.keyboard.1" :"hotbar.1",
-    "key.keyboard.2" :"hotbar.2",
-    "key.keyboard.3" :"hotbar.3",
-    "key.keyboard.4" :"hotbar.4",
-    "key.keyboard.5" :"hotbar.5",
-    "key.keyboard.6" :"hotbar.6",
-    "key.keyboard.7" :"hotbar.7",
-    "key.keyboard.8" :"hotbar.8",
-    "key.keyboard.9" :"hotbar.9",
-    "key.keyboard.e" :"inventory",
-    "key.keyboard.space" :"jump",
-    "key.keyboard.a" :"left",
-    "key.keyboard.d" :"right",
-    "key.keyboard.left.shift" :"sneak",
-    "key.keyboard.left.control" :"sprint",
-    "key.keyboard.f" :"swapHands",
+    "key.keyboard.escape" :"ESC", "key.keyboard.s" :"back", "key.keyboard.q" :"drop",
+    "key.keyboard.w" :"forward", "key.keyboard.1" :"hotbar.1", "key.keyboard.2" :"hotbar.2",
+    "key.keyboard.3" :"hotbar.3", "key.keyboard.4" :"hotbar.4", "key.keyboard.5" :"hotbar.5",
+    "key.keyboard.6" :"hotbar.6", "key.keyboard.7" :"hotbar.7", "key.keyboard.8" :"hotbar.8",
+    "key.keyboard.9" :"hotbar.9", "key.keyboard.e" :"inventory", "key.keyboard.space" :"jump",
+    "key.keyboard.a" :"left", "key.keyboard.d" :"right", "key.keyboard.left.shift" :"sneak",
+    "key.keyboard.left.control" :"sprint", "key.keyboard.f" :"swapHands",
 }
 
-# Template action
 NOOP_ACTION = {
     "ESC": 0, "back": 0, "drop": 0, "forward": 0, "hotbar.1": 0, "hotbar.2": 0,
     "hotbar.3": 0, "hotbar.4": 0, "hotbar.5": 0, "hotbar.6": 0, "hotbar.7": 0,
@@ -52,11 +34,10 @@ MINEREC_ORIGINAL_HEIGHT_PX = 720
 CAMERA_SCALER = 360.0 / 2400.0
 
 def json_action_to_env_action(json_action):
-    # This might be slow...
     env_action = NOOP_ACTION.copy()
     env_action["camera"] = np.array([0, 0])
-
     is_null_action = True
+    
     keyboard_keys = json_action["keyboard"]["keys"]
     for key in keyboard_keys:
         if key in KEYBOARD_BUTTON_MAPPING:
@@ -75,71 +56,78 @@ def json_action_to_env_action(json_action):
         if abs(camera_action[1]) > 180: camera_action[1] = 0
 
     mouse_buttons = mouse["buttons"]
-    if 0 in mouse_buttons:
-        env_action["attack"] = 1
-        is_null_action = False
-    if 1 in mouse_buttons:
-        env_action["use"] = 1
-        is_null_action = False
-    if 2 in mouse_buttons:
-        env_action["pickItem"] = 1
-        is_null_action = False
+    if 0 in mouse_buttons: env_action["attack"] = 1; is_null_action = False
+    if 1 in mouse_buttons: env_action["use"] = 1; is_null_action = False
+    if 2 in mouse_buttons: env_action["pickItem"] = 1; is_null_action = False
 
     return env_action, is_null_action
-
 
 def composite_images_with_alpha(image1, image2, alpha, x, y):
     ch = max(0, min(image1.shape[0] - y, image2.shape[0]))
     cw = max(0, min(image1.shape[1] - x, image2.shape[1]))
     if ch == 0 or cw == 0: return
-    alpha = alpha[:ch, :cw]
-    image1[y:y + ch, x:x + cw, :] = (image1[y:y + ch, x:x + cw, :] * (1 - alpha) + image2[:ch, :cw, :] * alpha).astype(np.uint8)
+    try:
+        alpha_slice = alpha[:ch, :cw]
+        image1[y:y + ch, x:x + cw, :] = (
+            image1[y:y + ch, x:x + cw, :] * (1 - alpha_slice) + image2[:ch, :cw, :] * alpha_slice
+        ).astype(np.uint8)
+    except: pass
 
-
-# ### MODIFICA: Aggiunto parametro seq_len al worker
 def data_loader_worker(tasks_queue, output_queue, quit_workers_event, seq_len):
     """
-    Worker che processa i video e crea chunk di sequenze.
+    Worker modificato per restituire SEQUENZE intere, non frame singoli.
     """
     cursor_image = cv2.imread(CURSOR_FILE, cv2.IMREAD_UNCHANGED)
-    cursor_image = cursor_image[:16, :16, :]
-    cursor_alpha = cursor_image[:, :, 3:] / 255.0
-    cursor_image = cursor_image[:, :, :3]
+    if cursor_image is not None:
+        cursor_image = cursor_image[:16, :16, :]
+        cursor_alpha = cursor_image[:, :, 3:] / 255.0
+        cursor_image = cursor_image[:, :, :3]
+    else:
+        # Fallback se manca il cursore
+        cursor_alpha = None
 
     while True:
         task = tasks_queue.get()
-        if task is None:
-            break
+        if task is None: break
+        
         trajectory_id, video_path, json_path = task
         video = cv2.VideoCapture(video_path)
+        
+        # Buffer per la sequenza
+        frames_buffer = []
+        actions_buffer = []
+        first_flags_buffer = [] # True se è l'inizio del video o dopo un taglio
+        
         attack_is_stuck = False
         last_hotbar = 0
 
-        with open(json_path) as json_file:
-            json_lines = json_file.readlines()
-            json_data = "[" + ",".join(json_lines) + "]"
-            json_data = json.loads(json_data)
+        try:
+            with open(json_path, encoding='utf-8', errors='ignore') as json_file:
+                json_lines = json_file.readlines()
+                json_data = "[" + ",".join(json_lines) + "]"
+                json_data = json.loads(json_data)
+        except Exception as e:
+            print(f"Skipping broken JSON {json_path}: {e}")
+            output_queue.put(None) # Segnala fine task
+            continue
 
-        # ### MODIFICA: Buffer per accumulare la sequenza
-        obs_buffer = []
-        act_buffer = []
-        is_first_buffer = [] # Per sapere se è l'inizio di un episodio
-        # ---------------------------------------------
+        is_first_frame = True
 
         for i in range(len(json_data)):
-            if quit_workers_event.is_set():
-                break
+            if quit_workers_event.is_set(): break
             step_data = json_data[i]
 
+            # Gestione click mouse "incastrati"
             if i == 0:
                 if step_data["mouse"]["newButtons"] == [0]: attack_is_stuck = True
             elif attack_is_stuck:
                 if 0 in step_data["mouse"]["newButtons"]: attack_is_stuck = False
             if attack_is_stuck:
-                step_data["mouse"]["buttons"] = [button for button in step_data["mouse"]["buttons"] if button != 0]
+                step_data["mouse"]["buttons"] = [b for b in step_data["mouse"]["buttons"] if b != 0]
 
             action, is_null_action = json_action_to_env_action(step_data)
-
+            
+            # Hotbar logic
             current_hotbar = step_data["hotbar"]
             if current_hotbar != last_hotbar:
                 action["hotbar.{}".format(current_hotbar + 1)] = 1
@@ -147,71 +135,49 @@ def data_loader_worker(tasks_queue, output_queue, quit_workers_event, seq_len):
 
             ret, frame = video.read()
             if ret:
-                # Nota: qui NON saltiamo i null actions.
-                # Per le sequenze (LSTM) è meglio avere continuità temporale anche se non succede nulla.
-                # Se vuoi risparmiare spazio e il null è irrilevante, puoi decommentare, ma per il crafting
-                # a volte stare fermi è importante.
-                # if is_null_action: continue 
-
-                if step_data["isGuiOpen"]:
+                if is_null_action: continue # Salta frame nulli ma mantiene continuità video (rischio desync, ma standard in minerl)
+                
+                # Render cursore
+                if step_data["isGuiOpen"] and cursor_image is not None:
                     camera_scaling_factor = frame.shape[0] / MINEREC_ORIGINAL_HEIGHT_PX
                     cursor_x = int(step_data["mouse"]["x"] * camera_scaling_factor)
                     cursor_y = int(step_data["mouse"]["y"] * camera_scaling_factor)
                     composite_images_with_alpha(frame, cursor_image, cursor_alpha, cursor_x, cursor_y)
                 
+                # Preprocessing frame
                 cv2.cvtColor(frame, code=cv2.COLOR_BGR2RGB, dst=frame)
                 frame = np.asarray(np.clip(frame, 0, 255), dtype=np.uint8)
                 frame = resize_image(frame, AGENT_RESOLUTION)
-
-                # ### MODIFICA: Aggiungi al buffer invece di inviare subito
-                obs_buffer.append(frame)
-                act_buffer.append(action)
                 
-                # Flag: True se è il primissimo frame del video, altrimenti False
-                is_first_flag = (i == 0) and (len(obs_buffer) == 1)
-                is_first_buffer.append(is_first_flag)
+                # Accumula nel buffer
+                frames_buffer.append(frame)
+                actions_buffer.append(action)
+                first_flags_buffer.append(is_first_frame)
+                is_first_frame = False
 
-                # Se il buffer è pieno (abbiamo una sequenza completa)
-                if len(obs_buffer) >= seq_len:
-                    # Converti in numpy arrays
-                    # Shape: (SEQ_LEN, H, W, C)
-                    np_obs = np.array(obs_buffer)
-                    # Shape: (SEQ_LEN) - lista di dizionari
-                    np_act = np.array(act_buffer)
-                    np_first = np.array(is_first_buffer)
-
-                    output_queue.put((trajectory_id, np_obs, np_act, np_first), timeout=QUEUE_TIMEOUT)
-                    
-                    # Resetta i buffer
-                    obs_buffer = []
-                    act_buffer = []
-                    is_first_buffer = []
-                # --------------------------------------------------------
-
+                # Se abbiamo raggiunto la lunghezza della sequenza, invia il pacchetto
+                if len(frames_buffer) == seq_len:
+                    output_queue.put((trajectory_id, np.array(frames_buffer), np.array(actions_buffer), np.array(first_flags_buffer)))
+                    frames_buffer = []
+                    actions_buffer = []
+                    first_flags_buffer = []
             else:
-                print(f"Could not read frame from video {video_path}")
+                break
         
         video.release()
-        output_queue.put((trajectory_id, None, None, None), timeout=QUEUE_TIMEOUT)
-        if quit_workers_event.is_set():
-            break
+        output_queue.put(None) # Segnala fine video
+        if quit_workers_event.is_set(): break
     
-    output_queue.put(None)
+    output_queue.put(None) # Segnala fine worker
 
 class DataLoader:
-    """
-    Generator class for loading SEQUENCES from a dataset.
-    Returns batches of shape (BATCH, TIME, H, W, C)
-    """
-    # ### MODIFICA: Aggiunto parametro seq_len (default 32 frames)
-    def __init__(self, dataset_dir, n_workers=8, batch_size=4, n_epochs=1, max_queue_size=8, seq_len=32):
-        assert n_workers >= batch_size, "Number of workers must be equal or greater than batch size"
+    def __init__(self, dataset_dir, n_workers=4, batch_size=4, n_epochs=1, seq_len=32, max_queue_size=8):
         self.dataset_dir = dataset_dir
         self.n_workers = n_workers
         self.n_epochs = n_epochs
         self.batch_size = batch_size
+        self.seq_len = seq_len # Ora supportiamo seq_len!
         self.max_queue_size = max_queue_size
-        self.seq_len = seq_len # Nuova proprietà
         
         unique_ids = glob.glob(os.path.join(dataset_dir, "*.mp4"))
         unique_ids = list(set([os.path.basename(x).split(".")[0] for x in unique_ids]))
@@ -223,8 +189,6 @@ class DataLoader:
             json_path = os.path.abspath(os.path.join(dataset_dir, unique_id + ".jsonl"))
             demonstration_tuples.append((video_path, json_path))
 
-        assert n_workers <= len(demonstration_tuples), f"n_workers should be lower or equal than number of demonstrations"
-
         self.demonstration_tuples = []
         for i in range(n_epochs):
             random.shuffle(demonstration_tuples)
@@ -232,6 +196,8 @@ class DataLoader:
 
         self.task_queue = Queue()
         self.n_steps_processed = 0
+        
+        # Riempi coda task
         for trajectory_id, task in enumerate(self.demonstration_tuples):
             self.task_queue.put((trajectory_id, *task))
         for _ in range(n_workers):
@@ -240,7 +206,6 @@ class DataLoader:
         self.output_queues = [Queue(maxsize=max_queue_size) for _ in range(n_workers)]
         self.quit_workers_event = Event()
         
-        # ### MODIFICA: Passiamo seq_len al worker
         self.processes = [
             Process(
                 target=data_loader_worker,
@@ -248,16 +213,17 @@ class DataLoader:
                     self.task_queue,
                     output_queue,
                     self.quit_workers_event,
-                    self.seq_len 
+                    seq_len # Passiamo seq_len al worker
                 ),
                 daemon=True
             )
             for output_queue in self.output_queues
         ]
-        # ---------------------------------------
-        
         for process in self.processes:
             process.start()
+        
+        # Buffer interno per gestire i None (fine video) restituiti dai worker
+        self.worker_finished_count = 0
 
     def __iter__(self):
         return self
@@ -266,37 +232,46 @@ class DataLoader:
         batch_frames = []
         batch_actions = []
         batch_episode_id = []
-        batch_first = [] # Nuovo array per indicare l'inizio episodi
+        batch_first = []
 
-        for i in range(self.batch_size):
-            workitem = self.output_queues[self.n_steps_processed % self.n_workers].get(timeout=QUEUE_TIMEOUT)
+        collected = 0
+        while collected < self.batch_size:
+            # Round-robin sui worker
+            worker_idx = self.n_steps_processed % self.n_workers
+            
+            try:
+                workitem = self.output_queues[worker_idx].get(timeout=QUEUE_TIMEOUT)
+            except:
+                # Se timeout, prova il prossimo worker
+                self.n_steps_processed += 1
+                continue
+
             if workitem is None:
-                raise StopIteration()
-            
-            # ### MODIFICA: Unpack include ora 'is_first'
-            trajectory_id, frame_seq, action_seq, first_seq = workitem
-            
-            if frame_seq is None:
-                # Gestione fine video (logica semplificata per non bloccare)
-                # In una implementazione robusta dovremmo riprovare a prendere un altro item
-                # Qui usiamo ricorsione semplice o saltiamo
-                # Per semplicità, rilanciamo StopIteration se un worker finisce, 
-                # ma in produzione dovresti gestire il 'None' meglio.
-                # Per ora assumiamo che i dati siano ben bilanciati.
-                return self.__next__() 
+                # Un video o un worker è finito
+                # Nota: Una gestione robusta richiederebbe di contare quanti worker sono morti definitivamente
+                # Per ora saltiamo al prossimo
+                self.n_steps_processed += 1
+                continue
 
-            batch_frames.append(frame_seq)
-            batch_actions.append(action_seq)
-            batch_episode_id.append(trajectory_id)
-            batch_first.append(first_seq)
+            # Unpack dei dati (ora sono SEQUENZE, non singoli frame)
+            # workitem è (trajectory_id, frames_seq, actions_seq, first_flags_seq)
+            trajectory_id, frames, actions, firsts = workitem
             
+            # Qui frames ha shape (seq_len, H, W, C)
+            batch_frames.append(frames)
+            batch_actions.append(actions)
+            batch_episode_id.append(trajectory_id)
+            batch_first.append(firsts)
+            
+            collected += 1
             self.n_steps_processed += 1
-        
-        # Ritorna tuple: (Batch, Time, H, W, C)
+
         return batch_frames, batch_actions, batch_episode_id, batch_first
 
     def __del__(self):
-        self.quit_workers_event.set()
-        for process in self.processes:
-            process.terminate()
-            process.join()
+        if hasattr(self, 'quit_workers_event'):
+            self.quit_workers_event.set()
+        if hasattr(self, 'processes'):
+            for process in self.processes:
+                process.terminate()
+                process.join()

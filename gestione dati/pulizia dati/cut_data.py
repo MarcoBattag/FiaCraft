@@ -165,6 +165,6 @@ def process_videos(input_folder, output_folder):
 
 if __name__ == "__main__":
     # Assicurati di aggiornare i percorsi se necessario
-    input_folder = "/home/arion/FiaCraft/data/data-video/filtered"       
-    output_folder = "/home/arion/FiaCraft/data/data-video/video_tagliati_pickaxe"
+    input_folder = "/home/dodod/FiaCraft/data/data-video/filtered"       
+    output_folder = "/home/dodod/FiaCraft/data/data-video/video_tagliati_pickaxe"
     process_videos(input_folder, output_folder)

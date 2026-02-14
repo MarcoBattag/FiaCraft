@@ -1,84 +1,34 @@
-# NeurIPS 2022: MineRL BASALT Behavioural Cloning Baseline
+# FiaCraft - Progetto per il corso di Fondamenti di Intelligenza Artificiale
 
-[![Discord](https://img.shields.io/discord/565639094860775436.svg)](https://discord.gg/BT9uegr)
+## Introduzione
+**FiaCraft** è un progetto universitario (corso di Fondamenti di IA) volto ad addestrare agenti su Minecraft utilizzando [MineRL](https://minerl.readthedocs.io/en/latest/) e l'apprendimento per imitazione.<br>
+Il nostro team ha lavorato attivamente all'**estensione della libreria originale**, introducendo nuove funzionalità per migliorare l'addestramento e la versatilità degli agenti:
 
-This repository contains a behavioural cloning baseline solution for the MineRL BASALT 2022 Competition ("basalt" track)! This solution fine-tunes the "width-x1" models of OpenAI VPT for more sample-efficient training.
+* **📈 Data Augmentation:** Sviluppo di script dedicati per l'aumento sintetico dei dati di addestramento, migliorando la generalizzazione del modello.
+* **🧠 Reinforcement Learning Avanzato:** Implementazione di un modulo di apprendimento per rinforzo basato su una **funzione di reward proprietaria**, integrata con meccanismi di feedback umano.
+* **🌲 Nuovo Ambiente Custom:** Definizione completa di un nuovo task e rilascio dell'ambiente `(FIA-WoodenPickaxe-v0)`, appositamente ingegnerizzato per testare le nuove capacità acquisite dall'agente.
 
-You can find the "intro" track baseline solution [here](https://github.com/minerllabs/basalt-2022-intro-track-baseline).
+## ✨ Funzionalità Principali
 
-MineRL BASALT is a competition on solving human-judged tasks. The tasks in this competition do not have a pre-defined reward function: the goal is to produce trajectories that are judged by real humans to be effective at solving a given task.
+L'obiettivo centrale del progetto è l'ottimizzazione delle fasi iniziali di gioco (**Early Game**). L'agente è stato addestrato per completare la sequenza di sopravvivenza base massimizzando la velocità di esecuzione e la razionalità decisionale.
 
-See [the AICrowd competition page](https://www.aicrowd.com/challenges/neurips-2022-minerl-basalt-competition) for further details on the competition.
+### 🛠️ Definizione del Task (Pipeline)
+Abbiamo progettato un task sequenziale che richiede all'agente di completare la seguente catena di azioni:
 
+* **🪵 Raccolta:** Individuazione e abbattimento di alberi per l'acquisizione di tronchi di legno di qualsiasi tipo.
+* **🪚 Lavorazione:** Trasformazione delle risorse grezze in assi di legno (*planks*).
+* **📦 Setup:** Crafting del **Banco da lavoro**, essenziale per sbloccare ricette complesse.
+* **⛏️ Strumentazione:** Costruzione finale di un **Piccone di Legno** , completando l'obbiettivo di questo addestramento.
 
-## Downloading the BASALT dataset
+## ⚙️ Installazione Manuale
 
-You can find the index files containing all the download URLs for the full BASALT dataset in the [OpenAI VPT repository at the bottom](https://github.com/openai/Video-Pre-Training#basalt-2022-dataset).
+Se preferisci configurare l'ambiente manualmente, segui questi passaggi.
 
-We have included a download utility (`utils/download_dataset.py`) to help you download the dataset. You can use it with the index files from the OpenAI VPT repository. For example, if you download the FindCave dataset index file, named `find-cave-Jul-28.json`, you can download first 100 demonstrations to `MineRLBasaltFindCave-v0` directory with:
+> ⚠️ **Nota sulla Compatibilità:** Questo progetto è ottimizzato per sistemi **Linux**.
+> L'installazione su **Windows** o **macOS** è nota per essere estremamente complessa e instabile (spesso richiede workaround avanzati). Procedi su questi sistemi operativo a tuo rischio.
 
-```
-python download_dataset.py --json-file find-cave-Jul-28.json --output-dir MineRLBasaltFindCave-v0 --num-demos 100
-```
-
-Basic dataset statistics (note: one trajectory/demonstration may be split up into multiple videos):
-```
-Size  #Videos  Name
---------------------------------------------------
-146G  1399     MineRLBasaltBuildVillageHouse-v0
-165G  2833     MineRLBasaltCreateVillageAnimalPen-v0
-165G  5466     MineRLBasaltFindCave-v0
-175G  4230     MineRLBasaltMakeWaterfall-v0
-```
-
-
-
-## Setting up
-
-Install [MineRL v1.0.0](https://github.com/minerllabs/minerl) (or newer) and the requirements for [OpenAI VPT](https://github.com/openai/Video-Pre-Training).
-
-Download the dataset following above instructions. Also download the 1x width foundational model [.weights](https://openaipublic.blob.core.windows.net/minecraft-rl/models/foundation-model-1x.weights) and [.model](https://openaipublic.blob.core.windows.net/minecraft-rl/models/foundation-model-1x.model) files for the OpenAI VPT model.
-
-Place these data files under `data` to match the following structure:
-
-```
-├── data
-│   ├── MineRLBasaltBuildVillageHouse-v0
-│   │   ├── Player70-f153ac423f61-20220707-111912.jsonl
-│   │   ├── Player70-f153ac423f61-20220707-111912.mp4
-│   │   └── ... rest of the files
-│   ├── MineRLBasaltCreateVillageAnimalPen-v0
-│   │   └── ... files as above
-│   ├── MineRLBasaltFindCave-v0
-│   │   └── ... files as above
-│   ├── MineRLBasaltMakeWaterfall-v0
-│   │   └── ... files as above
-│   └── VPT-models
-│       ├── foundation-model-1x.model
-│       └── foundation-model-1x.weights
-```
-
-
-## Training models
-
-Running following code will save a fine-tuned network for each task under `train` directory. This has been tested to fit into a 8GB GPU.
-
-```
-python train.py
-```
-
-## Visualizing/enjoying/evaluating models
-
-To run the trained model for `MineRLBasaltFindCave-v0`, run the following:
-
-```
-python run_agent.py --model data/VPT-models/foundation-model-1x.model --weights train/MineRLBasaltFindCave.weights --env MineRLBasaltFindCave-v0 --show
-```
-
-Change `FindCave` to other tasks to run for different tasks.
-
-## How to Submit a Model on AICrowd.
-
-**Note:** This repository is *not* submittable as-is. You first need to train the models, add them to the git repository and then submit to AICrowd.
-
-To submit this baseline agent follow the [submission instructions](https://github.com/minerllabs/basalt_2022_competition_submission_template/), but use this repo instead of the starter kit repo.
+### 1. Clona la Repository
+Scarica il codice sorgente e spostati nella cartella del progetto:
+```bash
+git clone [https://github.com/MarcoBattag/FiaCraft.git](https://github.com/MarcoBattag/FiaCraft.git)
+cd FiaCraft
