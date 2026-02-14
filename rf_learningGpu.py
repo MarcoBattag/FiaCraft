@@ -31,7 +31,10 @@ MATERIAL_REWARDS = {
     "planks": 4.0,         
     "stick": 6.0,
     "crafting_table": 20.0,
-    "wooden_pickaxe": 500.0 
+    "wooden_pickaxe": 500.0,
+    "dirt": -0.2,
+    "sand": -0.2,
+    "gravel": -0.2 
 }
 
 def compute_reward_and_stop(inventory_obs, best_inventory, is_first_step=False):
