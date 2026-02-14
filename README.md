@@ -32,3 +32,32 @@ Scarica il codice sorgente e spostati nella cartella del progetto:
 ```bash
 git clone [https://github.com/MarcoBattag/FiaCraft.git](https://github.com/MarcoBattag/FiaCraft.git)
 cd FiaCraft
+
+### 2. Installazione requirements.txt
+- **Crea un ambiente virtuale:**<br>
+  Puoi usare le versioni di python che vanno dalla 3.8 alla 3.10(consigliato), personalmente abbiamo scelto 3.10<br>
+  (assicurati di usare questa versione quando creerai il tuo ambiente):
+  ```bash
+    sudo apt install python3.10
+  ```
+  Suggeriamo di utilizzare un ambiente virtuale per isolare le dipendenze del progetto
+  ```bash
+    python3 -m venv myenv
+    source myenv/bin/activate
+  ```
+  
+- **Installa le dipendenze richieste eseguendo:**
+  ```bash
+    pip install -r requirements.txt
+  ```
+  
+- **Installa MineRL:**<br>
+  Tieni conto che MineRL ha bisogno di Java 8:
+  ```bash
+    sudo apt install openjdk-8-jdk
+   ```
+  Ora puoi installare MineRL, il modo più semplice per farlo è tramite il repository ufficiale (v1.0.2)
+   ```bash
+    pip install git+https://github.com/minerllabs/minerl
+   ```
+  Adesso dovresti avere tutto ciò che ti serve per eseguire il progetto!
