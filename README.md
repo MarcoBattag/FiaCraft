@@ -32,7 +32,7 @@ Scarica il codice sorgente e spostati nella cartella del progetto:
 ```bash
 git clone [https://github.com/MarcoBattag/FiaCraft.git](https://github.com/MarcoBattag/FiaCraft.git)
 cd FiaCraft
-
+```
 ### 2. Installazione requirements.txt
 - **Crea un ambiente virtuale:**<br>
   Puoi usare le versioni di python che vanno dalla 3.8 alla 3.10(consigliato), personalmente abbiamo scelto 3.10<br>
