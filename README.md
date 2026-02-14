@@ -12,7 +12,7 @@ Il nostro team ha lavorato attivamente all'**estensione della libreria originale
 
 L'obiettivo centrale del progetto è l'ottimizzazione delle fasi iniziali di gioco (**Early Game**). L'agente è stato addestrato per completare la sequenza di sopravvivenza base massimizzando la velocità di esecuzione e la razionalità decisionale.
 
-### 🛠️ Definizione del Task (Pipeline)
+### 🛠️ Definizione del Task
 Abbiamo progettato un task sequenziale che richiede all'agente di completare la seguente catena di azioni:
 
 * **🪵 Raccolta:** Individuazione e abbattimento di alberi per l'acquisizione di tronchi di legno di qualsiasi tipo.
@@ -21,9 +21,6 @@ Abbiamo progettato un task sequenziale che richiede all'agente di completare la 
 * **⛏️ Strumentazione:** Costruzione finale di un **Piccone di Legno** , completando l'obbiettivo di questo addestramento.
 
 ## ⚙️ Installazione Manuale
-
-Se preferisci configurare l'ambiente manualmente, segui questi passaggi.
-
 > ⚠️ **Nota sulla Compatibilità:** Questo progetto è ottimizzato per sistemi **Linux**.
 > L'installazione su **Windows** o **macOS** è nota per essere estremamente complessa e instabile (spesso richiede workaround avanzati). Procedi su questi sistemi operativo a tuo rischio.
 

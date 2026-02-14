@@ -7,6 +7,7 @@ import gym
 import minerl
 import torch as th
 import numpy as np
+import pandas as pd  # Import necessario per Excel
 
 # Suppress FutureWarning
 import warnings
@@ -30,6 +31,9 @@ WEIGHT_DECAY = 0.0
 KL_LOSS_WEIGHT = 1.0
 MAX_GRAD_NORM = 5.0
 MAX_BATCHES = 200000 if USING_FULL_DATASET else int(1e9)
+
+# Nome del file Excel di output
+LOG_FILE_NAME = "training_loss_log.xlsx"
 
 # Augmentation (richiede C,H,W)
 aug_transform = transforms.Compose([
@@ -86,20 +90,20 @@ def behavioural_cloning_train(data_dir, in_model, in_weights, out_weights):
     episode_hidden_states = {}
     
     acc_total_loss = 0
-    acc_nll_loss = 0
-    acc_kl_loss = 0
     best_loss_so_far = float('inf')
     
-    print(f"--- TRAINING AVVIATO (FIXED) ---")
+    # Lista per accumulare i dati da scrivere in Excel
+    training_stats = [] 
+
+    print(f"--- TRAINING AVVIATO (SEMPLIFICATO) ---")
     print(f"Device: {DEVICE} | Batch: {BATCH_SIZE} | Workers: {N_WORKERS}")
-    print("-" * 60)
+    print(f"Log Excel: {LOG_FILE_NAME}")
+    print("-" * 40)
 
     for batch_i, (batch_images, batch_actions, batch_episode_id, batch_first) in enumerate(data_loader):
         optimizer.zero_grad() 
         
         batch_total_loss = 0
-        batch_nll = 0
-        batch_kl = 0
         
         for image_seq, action_seq, episode_id, first_seq in zip(batch_images, batch_actions, batch_episode_id, batch_first):
             if image_seq is None: continue
@@ -109,8 +113,6 @@ def behavioural_cloning_train(data_dir, in_model, in_weights, out_weights):
             agent_state = episode_hidden_states[episode_id]
 
             seq_loss = 0
-            seq_nll = 0
-            seq_kl = 0
             seq_len = len(image_seq)
             valid_steps = 0 
             
@@ -127,19 +129,11 @@ def behavioural_cloning_train(data_dir, in_model, in_weights, out_weights):
                 
                 valid_steps += 1
 
-                # 1. Carichiamo su GPU e mettiamo in formato Canali-Prima (C, H, W) per l'Augmentation
                 img_tensor = th.from_numpy(img_t).to(DEVICE).permute(2, 0, 1).float() / 255.0
-                
-                # 2. Augmentation
                 img_tensor = aug_transform(img_tensor)
-                
-                # 3. FIX: Torniamo a Canali-Ultimi (H, W, C) perché l'Agente VPT si aspetta questo!
-                img_tensor = img_tensor.permute(1, 2, 0)
-                img_tensor = img_tensor * 255.0
+                img_tensor = img_tensor.permute(1, 2, 0) * 255.0
 
-                # 4. Creiamo il dizionario con la chiave corretta "img"
                 agent_obs = {"img": img_tensor.unsqueeze(0)}
-                
                 first_tensor = th.from_numpy(np.array((is_first_t,))).to(DEVICE)
 
                 pi_distribution, _, new_agent_state = policy.get_output_for_observation(
@@ -154,22 +148,16 @@ def behavioural_cloning_train(data_dir, in_model, in_weights, out_weights):
                 log_prob = policy.get_logprob_of_action(pi_distribution, agent_action)
                 kl_div = policy.get_kl_of_action_dists(pi_distribution, original_pi_distribution)
                 
-                current_nll = -log_prob
-                step_loss = current_nll + KL_LOSS_WEIGHT * kl_div
+                # Calcolo Loss (NLL + KL) ma senza tracciare i singoli componenti per la stampa
+                step_loss = -log_prob + KL_LOSS_WEIGHT * kl_div
                 
                 seq_loss += step_loss
-                seq_nll += current_nll
-                seq_kl += kl_div
-                
                 agent_state = new_agent_state
 
             if valid_steps > 0:
                 final_loss = (seq_loss / valid_steps) / BATCH_SIZE
                 final_loss.backward()
-                
                 batch_total_loss += final_loss.item()
-                batch_nll += (seq_nll / valid_steps).item() / BATCH_SIZE
-                batch_kl += (seq_kl / valid_steps).item() / BATCH_SIZE
 
             episode_hidden_states[episode_id] = tree_map(lambda x: x.detach(), agent_state)
 
@@ -178,23 +166,28 @@ def behavioural_cloning_train(data_dir, in_model, in_weights, out_weights):
         scheduler.step()
 
         acc_total_loss += batch_total_loss * BATCH_SIZE
-        acc_nll_loss += batch_nll * BATCH_SIZE
-        acc_kl_loss += batch_kl * BATCH_SIZE
         
         if batch_i % REPORT_RATE == 0 and batch_i > 0:
             time_since_start = time.time() - start_time
             avg_loss = acc_total_loss / REPORT_RATE
-            avg_nll = acc_nll_loss / REPORT_RATE
-            avg_kl = acc_kl_loss / REPORT_RATE
-            current_lr = scheduler.get_last_lr()[0]
             
-            print(f"[Batch {batch_i}] Time: {time_since_start:.0f}s | "
-                  f"Loss: {avg_loss:.4f} (NLL: {avg_nll:.4f} + KL: {avg_kl:.4f}) | "
-                  f"LR: {current_lr:.6f}")
+            # --- STAMPA SEMPLIFICATA ---
+            print(f"[Batch {batch_i}] Time: {time_since_start:.0f}s | Loss: {avg_loss:.4f}")
             
+            # --- EXCEL SEMPLIFICATO (Compatibile con make_graph.py) ---
+            stats_entry = {
+                "Batch": batch_i,
+                "Time (s)": time_since_start,
+                "Average Loss": avg_loss
+            }
+            training_stats.append(stats_entry)
+            
+            try:
+                pd.DataFrame(training_stats).to_excel(LOG_FILE_NAME, index=False)
+            except Exception as e:
+                print(f"Errore Excel: {e}")
+
             acc_total_loss = 0
-            acc_nll_loss = 0
-            acc_kl_loss = 0
 
             if avg_loss < best_loss_so_far:
                 best_loss_so_far = avg_loss
@@ -208,6 +201,7 @@ def behavioural_cloning_train(data_dir, in_model, in_weights, out_weights):
         if batch_i > MAX_BATCHES:
             break
 
+    pd.DataFrame(training_stats).to_excel(LOG_FILE_NAME, index=False)
     th.save(policy.state_dict(), out_weights)
     print("Training completato.")
 
